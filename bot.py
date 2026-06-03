@@ -1,4 +1,5 @@
 import os
+import math
 import pytz
 from datetime import datetime
 import yfinance as yf
@@ -41,9 +42,22 @@ def is_market_closed() -> bool:
         
     return False
 
-def format_idr_number(num: int) -> str:
+def format_idr_number(num) -> str:
     """Formats an integer to Indonesian currency style (using dots for thousands separator)"""
-    return f"{num:,}".replace(",", ".")
+    if not is_valid_rate(num):
+        return "nan"
+    return f"{int(num):,}".replace(",", ".")
+
+
+def normalize_rate(value):
+    try:
+        rate = float(value)
+        if not math.isfinite(rate):
+            return None
+        return int(round(rate))
+    except (TypeError, ValueError):
+        return None
+
 
 def main():
     print("🚀 Initiating hourly execution checks...")
@@ -57,14 +71,24 @@ def main():
     tickers = ["USDIDR=X", "SGDIDR=X", "MYRIDR=X"]
     
     data = yf.download(tickers, period="1d", interval="1m", progress=False)
+    print("data", data)
     if data.empty:
         print("❌ Error: No data received from yfinance.")
         return
         
-    last_hour_data = data['Close'].tail(60)
-    latest_usd = int(round(last_hour_data['USDIDR=X'].dropna().iloc[-1]))
-    latest_sgd = int(round(last_hour_data['SGDIDR=X'].dropna().iloc[-1]))
-    latest_myr = int(round(last_hour_data['MYRIDR=X'].dropna().iloc[-1]))
+    last_hour_data = data['Close'].tail(60).dropna(subset=["USDIDR=X", "SGDIDR=X", "MYRIDR=X"])
+    if last_hour_data.empty:
+        print("❌ Error: No valid closing data available for USDIDR, SGDIDR, or MYRIDR.")
+        return
+
+    latest_usd = normalize_rate(last_hour_data['USDIDR=X'].iloc[-1])
+    latest_sgd = normalize_rate(last_hour_data['SGDIDR=X'].iloc[-1])
+    latest_myr = normalize_rate(last_hour_data['MYRIDR=X'].iloc[-1])
+
+    if not all(value is not None for value in (latest_usd, latest_sgd, latest_myr)):
+        print("❌ Error: Invalid numeric values received from yfinance. Skipping this run.")
+        print(f"       USD={latest_usd}, SGD={latest_sgd}, MYR={latest_myr}")
+        return
     
     current_timestamp = int(last_hour_data.index[-1].timestamp())
 
@@ -94,6 +118,10 @@ def main():
 
 # --- HELPER FUNCTIONS ---
 
+def is_valid_rate(value) -> bool:
+    return isinstance(value, (int, float)) and math.isfinite(value)
+
+
 def check_if_already_posted(timestamp: int) -> bool:
     try:
         response = supabase.table("currency").select("is_posted").eq("timestamp", timestamp).execute()
@@ -101,7 +129,7 @@ def check_if_already_posted(timestamp: int) -> bool:
     except Exception:
         return False
 
-def check_and_update_ath(usd: float, sgd: float, myr: float) -> list:
+def check_and_update_ath(usd: int, sgd: int, myr: int) -> list:
     ath_broken = []
     try:
         response = supabase.table("ath_records").select("*").eq("id", 1).execute()
@@ -110,11 +138,11 @@ def check_and_update_ath(usd: float, sgd: float, myr: float) -> list:
         ath_data = response.data[0]
         updates = {}
 
-        if usd > ath_data.get("usd", 0.0):
+        if usd > ath_data.get("usd", 0):
             ath_broken.append("USD"); updates["usd"] = usd
-        if sgd > ath_data.get("sgd", 0.0):
+        if sgd > ath_data.get("sgd", 0):
             ath_broken.append("SGD"); updates["sgd"] = sgd
-        if myr > ath_data.get("myr", 0.0):
+        if myr > ath_data.get("myr", 0):
             ath_broken.append("MYR"); updates["myr"] = myr
 
         if updates:
@@ -202,7 +230,11 @@ def post_to_x(text: str, image_path: str) -> bool:
         print(f"❌ Error posting to X: {e}")
         return False
 
-def save_current_rates(timestamp: int, usd: float, sgd: float, myr: float, is_posted: bool):
+def save_current_rates(timestamp: int, usd: int, sgd: int, myr: int, is_posted: bool):
+    if not all(is_valid_rate(value) for value in (usd, sgd, myr)):
+        print("⚠️ Error saving state: invalid numeric values in rate data. Skipping Supabase upsert.")
+        return
+
     try:
         data = {"timestamp": timestamp, "usd": usd, "sgd": sgd, "myr": myr, "is_posted": is_posted}
         supabase.table("currency").upsert(data, on_conflict="timestamp").execute()
