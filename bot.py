@@ -19,7 +19,40 @@ X_ACCESS_SECRET = os.environ.get("X_ACCESS_SECRET")
 # Initialize Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def is_market_closed() -> bool:
+    """
+    Checks if the currency market is closed based on Asia/Jakarta time.
+    Forex closes Friday 17:00 EST (Saturday 04:00 WIB)
+    Forex opens Sunday 17:00 EST (Monday 04:00 WIB)
+    """
+    tz = pytz.timezone('Asia/Jakarta')
+    now = datetime.now(tz)
+    
+    # day_of_week: 0=Monday, 5=Saturday, 6=Sunday
+    day = now.weekday()
+    hour = now.hour
+
+    if day == 5 and hour >= 4:
+        return True
+    if day == 6:
+        return True
+    if day == 0 and hour < 4:
+        return True
+        
+    return False
+
+def format_idr_number(num: int) -> str:
+    """Formats an integer to Indonesian currency style (using dots for thousands separator)"""
+    return f"{num:,}".replace(",", ".")
+
 def main():
+    print("🚀 Initiating hourly execution checks...")
+    
+    # Short-circuit if market is closed to save GitHub Action minutes
+    if is_market_closed():
+        print("💤 Market is currently closed for the weekend (Sabtu 04:00 - Senin 04:00 WIB). Exiting safely.")
+        return
+
     print("🔄 Fetching market data from yfinance...")
     tickers = ["USDIDR=X", "SGDIDR=X", "MYRIDR=X"]
     
@@ -29,9 +62,9 @@ def main():
         return
         
     last_hour_data = data['Close'].tail(60)
-    latest_usd = float(last_hour_data['USDIDR=X'].iloc[-1])
-    latest_sgd = float(last_hour_data['SGDIDR=X'].iloc[-1])
-    latest_myr = float(last_hour_data['MYRIDR=X'].iloc[-1])
+    latest_usd = int(round(last_hour_data['USDIDR=X'].dropna().iloc[-1]))
+    latest_sgd = int(round(last_hour_data['SGDIDR=X'].dropna().iloc[-1]))
+    latest_myr = int(round(last_hour_data['MYRIDR=X'].dropna().iloc[-1]))
     
     current_timestamp = int(last_hour_data.index[-1].timestamp())
 
@@ -128,8 +161,13 @@ def generate_chart(df, output_path: str):
 
 def get_change_text(new_rate: float, old_rate: float) -> str:
     if not old_rate or not new_rate: return ""
-    change = new_rate - old_rate
-    return f" (+{change:,.2f})" if change > 0 else f" ({change:,.2f})" if change < 0 else ""
+    change = int(new_rate - old_rate)
+    
+    if change > 0: 
+        return f" (+{format_idr_number(change)})"
+    elif change < 0: 
+        return f" ({format_idr_number(change)})" # Negative sign is kept naturally
+    return ""
 
 def format_tweet(intro: str, usd: float, sgd: float, myr: float, prev: dict, timestamp: int) -> str:
     tz = pytz.timezone('Asia/Jakarta')
@@ -146,9 +184,9 @@ def format_tweet(intro: str, usd: float, sgd: float, myr: float, prev: dict, tim
 
     intro_block = f"{intro}\n\n" if intro else ""
     return (f"{intro_block}Kurs Rupiah hari {date_str} jam {time_str} WIB:\n"
-            f"- USD/IDR: Rp{usd:,.2f}{usd_change}\n"
-            f"- SGD/IDR: Rp{sgd:,.2f}{sgd_change}\n"
-            f"- MYR/IDR: Rp{myr:,.2f}{myr_change}")
+            f"- USD/IDR: Rp{format_idr_number(usd)}{usd_change}\n"
+            f"- SGD/IDR: Rp{format_idr_number(sgd)}{sgd_change}\n"
+            f"- MYR/IDR: Rp{format_idr_number(myr)}{myr_change}")
 
 def post_to_x(text: str, image_path: str) -> bool:
     try:
