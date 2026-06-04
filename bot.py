@@ -339,7 +339,6 @@ def check_and_update_ath(df: pd.DataFrame) -> list:
     return ath_broken
 
 
-
 def generate_ai_intro(ath_broken: list) -> str:
     if not OPENROUTER_API_KEY:
         print("⚠️ OPENROUTER_API_KEY not set. Skipping AI intro generation.")
@@ -354,29 +353,44 @@ def generate_ai_intro(ath_broken: list) -> str:
         }
     )
     
-    ai_context = f"Peringatan! Mata uang berikut baru saja mencapai harga tertinggi sepanjang masa terhadap Rupiah: {', '.join(ath_broken)}!" if ath_broken else "Hanya update pasar yang rutin setiap jam. Pergerakan pasar normal."
+    if ath_broken:
+        ai_context = f"GILA! Beberapa mata uang baru aja ngegas cetak ATH segar melawan Rupiah: {', '.join(ath_broken)}. Pasar lagi nggak main-main."
+    else:
+        ai_context = "Pasar Rupiah hari ini biasa aja, nggak ada yang gila-gilaan atau drama besar."
     
     system_prompt = (
-        "Anda adalah expert currency bot di X (Twitter) yang melacak Rupiah Indonesia. "
-        "Gaya bahasa Anda: profesional, singkat, namun menarik. "
-        "ATURAN MUTLAK: \n"
-        "1. Hanya balas dengan 1 kalimat pendek.\n"
-        "2. DILARANG menyebutkan angka/harga secara spesifik.\n"
-        "3. DILARANG menggunakan hashtag (#).\n"
-        "4. Gunakan bahasa Indonesia yang baik, santai tapi baku."
+        "Kamu adalah trader senior yang sudah 15 tahun ngawasin rupiah di X. Kepribadianmu tajam, sinis, sarkastik, tapi tetap lucu dan to-the-point. "
+        "Kamu bukan bot, kamu manusia yang lagi ngetik tweet sambil ngopi di depan chart.\n\n"
+        "Gaya bicaramu:\n"
+        "- Bahasa gaul trader Indo, santai tapi berkelas, sedikit galau/sinis kalau pasar lagi gila.\n"
+        "- Pendek, punchy, bikin orang langsung ngerasa 'ini beneran'.\n"
+        "- Bayangkan kamu lagi ngetweet dari HP pas pasar lagi panas.\n\n"
+        "ATURAN MUTLAK (jangan pernah dilanggar):\n"
+        "1. Jawab HANYA dengan SATU KALIMAT PENDEK saja. Tidak boleh dua kalimat, tidak boleh paragraf, tidak boleh tambahan apapun.\n"
+        "2. DILARANG KERAS menyebutkan angka, harga, atau nilai spesifik.\n"
+        "3. DILARANG KERAS pakai hashtag apapun.\n"
+        "4. Kalau pasar normal: komentar jenaka yang nunjukin kebosanan atau 'biasa aja bro'.\n"
+        "5. Kalau ATH: nada provokatif, sedikit panik, sindir fundamental rupiah, atau sindiran tajam ke pemerintah/BI.\n"
+        "6. Boleh pakai emoji kalau pas, tapi tetap satu kalimat."
     )
     
-    user_prompt = f"Konteks saat ini: {ai_context}\nTuliskan pembukaan 1 kalimat untuk tweet update kurs. Jika ada All-Time High (ATH), buat suasana menegangkan. Jika normal, buat tetap santai dan informatif."
+    user_prompt = (
+        f"Konteks pasar sekarang: {ai_context}\n\n"
+        "Buatkan kalimat pembuka tweet update kurs hari ini. "
+        "Fokus ke vibe pasar + opini jujur trader. "
+        "Harus terasa manusia banget, bukan robot. "
+        "Langsung satu kalimat punchy yang bikin orang pengen like & RT."
+    )
     
     try:
         response = client.chat.completions.create(
-            model="google/gemini-2.5-flash:free", 
+            model="qwen/qwen3-next-80b-a3b-instruct:free",   # masih free preview & paling bagus sekarang
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
             ],
-            max_tokens=150,
-            temperature=0.7
+            max_tokens=90,
+            temperature=0.82
         )
         if response and response.choices and len(response.choices) > 0:
             intro = response.choices[0].message.content.strip()
