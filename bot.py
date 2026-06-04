@@ -345,18 +345,42 @@ def generate_ai_intro(ath_broken: list) -> str:
         print("⚠️ OPENROUTER_API_KEY not set. Skipping AI intro generation.")
         return ""
     
-    client = OpenAI(base_url="https://openrouter.ai/api/v1", api_key=OPENROUTER_API_KEY)
+    client = OpenAI(
+        base_url="https://openrouter.ai/api/v1",
+        api_key=OPENROUTER_API_KEY,
+        default_headers={
+            "HTTP-Referer": "https://github.com/KawalRupiah/X",
+            "X-Title": "Currency Bot"
+        }
+    )
+    
     ai_context = f"Peringatan! Mata uang berikut baru saja mencapai harga tertinggi sepanjang masa terhadap Rupiah: {', '.join(ath_broken)}!" if ath_broken else "Hanya update pasar yang rutin setiap jam. Pergerakan pasar normal."
-    prompt = f"Anda adalah expert currency bot di X (Twitter) yang melacak Rupiah Indonesia. Konteks: {ai_context}\nTulis pembukaan singkat dan menarik dalam 1 kalimat bahasa Indonesia untuk tweet update kurs setiap jam. Jika ada All-Time High (ATH) yang terlampaui, bunyi alarm dan buat suasana yang menegangkan! Jika tidak, tetap profesional dan singkat. JANGAN sertakan harga sebenarnya atau hashtag dalam kalimat Anda, hanya set mood-nya."
+    
+    system_prompt = (
+        "Anda adalah expert currency bot di X (Twitter) yang melacak Rupiah Indonesia. "
+        "Gaya bahasa Anda: profesional, singkat, namun menarik. "
+        "ATURAN MUTLAK: \n"
+        "1. Hanya balas dengan 1 kalimat pendek.\n"
+        "2. DILARANG menyebutkan angka/harga secara spesifik.\n"
+        "3. DILARANG menggunakan hashtag (#).\n"
+        "4. Gunakan bahasa Indonesia yang baik, santai tapi baku."
+    )
+    
+    user_prompt = f"Konteks saat ini: {ai_context}\nTuliskan pembukaan 1 kalimat untuk tweet update kurs. Jika ada All-Time High (ATH), buat suasana menegangkan. Jika normal, buat tetap santai dan informatif."
     
     try:
         response = client.chat.completions.create(
-            model="openrouter/free",
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=50
+            model="google/gemini-2.5-flash:free", 
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=150,
+            temperature=0.7
         )
         if response and response.choices and len(response.choices) > 0:
             intro = response.choices[0].message.content.strip()
+            intro = intro.strip('"').strip("'")
             print(f"✨ AI Intro Generated: {intro}")
             return intro
         return ""

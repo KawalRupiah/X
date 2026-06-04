@@ -47,7 +47,6 @@ jobs:
       - name: Execute Python Bot
         if: steps.market_check.outputs.is_open == 'true'
         env:
-          # This maps your hidden GitHub Secrets to the Python os.environ variables securely
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
