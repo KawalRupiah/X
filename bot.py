@@ -65,21 +65,21 @@ def main():
     # 4. Track All-Time Highs (ATH) from 24-hour data
     ath_broken = check_and_update_ath(data_df)
 
-    # 5. Generate Dynamic AI Intro & Grafana-Style Chart
+    # 5. Generate Dynamic AI Intro & Grafana-Style Charts
     dynamic_intro = generate_ai_intro(ath_broken)
-    image_path = "rupiah_hourly.png"
-    generate_chart(data_df, image_path)
+    image_paths = generate_chart(data_df, None)  # Returns list of 3 image paths
 
     # 6. Format Tweet Body
     tweet_text = format_tweet(dynamic_intro, latest_usd, latest_sgd, latest_myr, prev_usd, prev_sgd, prev_myr, current_dt)
     print(f"📝 Prepared Tweet Content:\n\n{tweet_text}\n")
     
     # 7. Post To X
-    post_to_x(tweet_text, image_path)
+    post_to_x(tweet_text, image_paths)
     
-    # Cleanup local image
-    if os.path.exists(image_path):
-        os.remove(image_path)
+    # Cleanup local images
+    for img_path in image_paths:
+        if os.path.exists(img_path):
+            os.remove(img_path)
 
 
 # ==========================================
@@ -140,7 +140,7 @@ def fetch_market_data_hourly() -> pd.DataFrame:
     return clean_data
 
 def generate_chart(df, output_path: str):
-    """Generates three separate Grafana-style charts, one for each currency with independent auto-scaling."""
+    """Generates three separate Grafana-style charts, one for each currency. Returns list of image paths."""
     print("📊 Generating three separate currency charts...")
     
     # Grafana Color Palette
@@ -164,22 +164,22 @@ def generate_chart(df, output_path: str):
         'myr': normalize_rate(df['MYRIDR=X'].iloc[-1])
     }
 
-    # Create 3 subplots (1 row, 3 columns)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    fig.patch.set_facecolor(bg_color)
-
     currencies = [
-        ('USDIDR=X', 'USD/IDR', color_usd, 'usd'),
-        ('SGDIDR=X', 'SGD/IDR', color_sgd, 'sgd'),
-        ('MYRIDR=X', 'MYR/IDR', color_myr, 'myr')
+        ('USDIDR=X', 'USD/IDR', color_usd, 'usd', 'rupiah_usd.png'),
+        ('SGDIDR=X', 'SGD/IDR', color_sgd, 'sgd', 'rupiah_sgd.png'),
+        ('MYRIDR=X', 'MYR/IDR', color_myr, 'myr', 'rupiah_myr.png')
     ]
 
     # Convert index to WIB (UTC+7)
     df_wib = df.copy()
     df_wib.index = df_wib.index.tz_localize('UTC').tz_convert('Asia/Jakarta')
 
-    for idx, (col, label, color, key) in enumerate(currencies):
-        ax = axes[idx]
+    image_paths = []
+    
+    for col, label, color, key, img_filename in currencies:
+        # Create individual figure for each currency
+        fig, ax = plt.subplots(1, 1, figsize=(10, 4))
+        fig.patch.set_facecolor(bg_color)
         ax.set_facecolor(bg_color)
 
         # Plot the line with WIB timezone
@@ -198,11 +198,11 @@ def generate_chart(df, output_path: str):
         # Build title with change
         change = current_rates[key] - prev_rates[key] if prev_rates[key] else 0
         title = f"{label}\n{change:+.0f}" if prev_rates[key] else label
-        ax.set_title(title, color=text_color, fontsize=11, fontweight='bold', pad=10)
+        ax.set_title(title, color=text_color, fontsize=13, fontweight='bold', pad=10)
 
-        ax.set_xlabel("Waktu (WIB)", color=text_color, fontsize=9, labelpad=8)
-        ax.set_ylabel("Kurs (Rp)", color=text_color, fontsize=9, labelpad=8)
-        ax.tick_params(colors=text_color, labelsize=8)
+        ax.set_xlabel("Waktu (WIB)", color=text_color, fontsize=10, labelpad=8)
+        ax.set_ylabel("Kurs (Rp)", color=text_color, fontsize=10, labelpad=8)
+        ax.tick_params(colors=text_color, labelsize=9)
         
         # Format x-axis labels in HH:MM format and rotate for readability
         import matplotlib.dates as mdates
@@ -218,12 +218,14 @@ def generate_chart(df, output_path: str):
         ax.spines['bottom'].set_color(grid_color)
 
         if prev_rates[key]:
-            ax.legend(loc="upper left", frameon=True, facecolor=bg_color, edgecolor=grid_color, fontsize=8)
+            ax.legend(loc="upper left", frameon=True, facecolor=bg_color, edgecolor=grid_color, fontsize=9, labelcolor=text_color)
 
-    fig.suptitle("Pergerakan Rupiah (24 Jam Terakhir)", color=text_color, fontsize=13, fontweight='bold', y=1.02)
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=150, facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight')
-    plt.close()
+        plt.tight_layout()
+        plt.savefig(img_filename, dpi=150, facecolor=fig.get_facecolor(), edgecolor='none', bbox_inches='tight')
+        plt.close()
+        image_paths.append(img_filename)
+    
+    return image_paths
 
 
 # ==========================================
@@ -362,14 +364,23 @@ def generate_ai_intro(ath_broken: list) -> str:
         print(f"⚠️ Error generating AI intro: {e}")
         return ""
 
-def post_to_x(text: str, image_path: str) -> bool:
+def post_to_x(text: str, image_paths) -> bool:
     try:
         auth = tweepy.OAuth1UserHandler(X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_SECRET)
         api_v1 = tweepy.API(auth)
-        media = api_v1.media_upload(image_path)
+        
+        # Handle both single image (string) and multiple images (list)
+        if isinstance(image_paths, str):
+            image_paths = [image_paths]
+        
+        # Upload all media
+        media_ids = []
+        for img_path in image_paths:
+            media = api_v1.media_upload(img_path)
+            media_ids.append(media.media_id)
         
         client_v2 = tweepy.Client(consumer_key=X_API_KEY, consumer_secret=X_API_SECRET, access_token=X_ACCESS_TOKEN, access_token_secret=X_ACCESS_SECRET)
-        response = client_v2.create_tweet(text=text, media_ids=[media.media_id])
+        response = client_v2.create_tweet(text=text, media_ids=media_ids)
         print(f"✅ Tweet successfully posted! Tweet ID: {response.data['id']}")
         return True
     except Exception as e:
