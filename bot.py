@@ -340,17 +340,14 @@ def check_and_update_ath(df: pd.DataFrame) -> list:
 
 
 def generate_ai_intro(ath_broken: list) -> str:
-    if not OPENROUTER_API_KEY:
-        print("⚠️ OPENROUTER_API_KEY not set. Skipping AI intro generation.")
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if not groq_key:
+        print("⚠️ GROQ_API_KEY not set. Skipping AI intro generation.")
         return ""
     
     client = OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=OPENROUTER_API_KEY,
-        default_headers={
-            "HTTP-Referer": "https://github.com/KawalRupiah/X",
-            "X-Title": "Currency Bot"
-        }
+        base_url="https://api.groq.com/openai/v1",
+        api_key=groq_key
     )
     
     if ath_broken:
@@ -384,7 +381,7 @@ def generate_ai_intro(ath_broken: list) -> str:
     
     try:
         response = client.chat.completions.create(
-            model="qwen/qwen3-next-80b-a3b-instruct:free",   # masih free preview & paling bagus sekarang
+            model="llama-3.3-70b-versatile", # Flagship Meta model via Groq
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
@@ -395,7 +392,7 @@ def generate_ai_intro(ath_broken: list) -> str:
         if response and response.choices and len(response.choices) > 0:
             intro = response.choices[0].message.content.strip()
             intro = intro.strip('"').strip("'")
-            print(f"✨ AI Intro Generated: {intro}")
+            print(f"✨ AI Intro Generated (via Groq): {intro}")
             return intro
         return ""
     except Exception as e:
