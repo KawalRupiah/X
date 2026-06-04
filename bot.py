@@ -339,22 +339,27 @@ def check_and_update_ath(df: pd.DataFrame) -> list:
     return ath_broken
 
 
-def generate_ai_intro(ath_broken: list) -> str:
-    groq_key = os.environ.get("GROQ_API_KEY")
-    if not groq_key:
-        print("⚠️ GROQ_API_KEY not set. Skipping AI intro generation.")
-        return ""
-    
-    client = OpenAI(
-        base_url="https://api.groq.com/openai/v1",
-        api_key=groq_key
-    )
-    
+def generate_ai_intro(ath_broken: list, market_stats: dict = None) -> str:
+    # 1. Setup Context & Prompts
+    context_lines = []
     if ath_broken:
-        ai_context = f"GILA! Beberapa mata uang baru aja ngegas cetak ATH segar melawan Rupiah: {', '.join(ath_broken)}. Pasar lagi nggak main-main."
+        context_lines.append(f"GILA! Beberapa mata uang baru aja ngegas cetak ATH segar melawan Rupiah: {', '.join(ath_broken)}. Pasar lagi nggak main-main.")
     else:
-        ai_context = "Pasar Rupiah hari ini biasa aja, nggak ada yang gila-gilaan atau drama besar."
-    
+        context_lines.append("Belum ada ATH baru, pergerakan masih dalam batas normal harian.")
+
+    if market_stats:
+        context_lines.append("\nDATA PASAR SAAT INI (Gunakan untuk memahami sentimen, TAPI INGAT: DILARANG MENYEBUTKAN ANGKA DI DALAM TWEET):")
+        for cur, stats in market_stats.items():
+            trend = "NAIK (Rupiah melemah)" if stats['now'] > stats['prev'] else "TURUN (Rupiah menguat)" if stats['now'] < stats['prev'] else "STAGNAN"
+            context_lines.append(
+                f"- {cur}/IDR: Tren sejam terakhir {trend}. "
+                f"Harga sekarang: Rp{stats['now']} (Sejam lalu: Rp{stats['prev']}). "
+                f"Range 24 Jam -> Tertinggi: Rp{stats['high']} | Terendah: Rp{stats['low']}."
+            )
+            
+    ai_context = "\n".join(context_lines)
+    print(f"AI Context: {ai_context}")
+
     system_prompt = (
         "Kamu adalah trader senior yang sudah 15 tahun ngawasin rupiah di X. Kepribadianmu tajam, sinis, sarkastik, tapi tetap lucu dan to-the-point. "
         "Kamu bukan bot, kamu manusia yang lagi ngetik tweet sambil ngopi di depan chart.\n\n"
@@ -364,40 +369,83 @@ def generate_ai_intro(ath_broken: list) -> str:
         "- Bayangkan kamu lagi ngetweet dari HP pas pasar lagi panas.\n\n"
         "ATURAN MUTLAK (jangan pernah dilanggar):\n"
         "1. Jawab HANYA dengan SATU KALIMAT PENDEK saja. Tidak boleh dua kalimat, tidak boleh paragraf, tidak boleh tambahan apapun.\n"
-        "2. DILARANG KERAS menyebutkan angka, harga, atau nilai spesifik.\n"
+        "2. DILARANG KERAS menyebutkan angka, harga, nilai spesifik, persentase, atau jam.\n"
         "3. DILARANG KERAS pakai hashtag apapun.\n"
-        "4. Kalau pasar normal: komentar jenaka yang nunjukin kebosanan atau 'biasa aja bro'.\n"
-        "5. Kalau ATH: nada provokatif, sedikit panik, sindir fundamental rupiah, atau sindiran tajam ke pemerintah/BI.\n"
-        "6. Boleh pakai emoji kalau pas, tapi tetap satu kalimat."
+        "4. Kalau sentimen pasar normal/sideways: komentar jenaka yang nunjukin kebosanan atau 'biasa aja bro'.\n"
+        "5. Kalau ATH atau tren naik tajam: nada provokatif, sedikit panik, sindir fundamental rupiah, atau sindir pemerintah/BI.\n"
+        "6. Kalau tren turun tajam (Rupiah menguat): nada kaget seneng tapi tetap sinis (misal: 'Tumben Rupiah berotot').\n"
+        "7. Boleh pakai emoji kalau pas, tapi tetap satu kalimat."
     )
     
     user_prompt = (
-        f"Konteks pasar sekarang: {ai_context}\n\n"
-        "Buatkan kalimat pembuka tweet update kurs hari ini. "
-        "Fokus ke vibe pasar + opini jujur trader. "
-        "Harus terasa manusia banget, bukan robot. "
+        f"Konteks pasar sekarang:\n{ai_context}\n\n"
+        "Buatkan kalimat pembuka tweet update kurs hari ini berdasarkan data sentimen di atas. "
+        "Fokus ke vibe pasar + opini jujur trader. Harus terasa manusia banget, bukan robot. "
         "Langsung satu kalimat punchy yang bikin orang pengen like & RT."
     )
-    
-    try:
-        response = client.chat.completions.create(
-            model="llama-3.3-70b-versatile", # Flagship Meta model via Groq
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=90,
-            temperature=0.82
-        )
-        if response and response.choices and len(response.choices) > 0:
-            intro = response.choices[0].message.content.strip()
-            intro = intro.strip('"').strip("'")
-            print(f"✨ AI Intro Generated (via Groq): {intro}")
-            return intro
+
+    # 2. Primary Attempt: Qwen via OpenRouter
+    if OPENROUTER_API_KEY:
+        try:
+            client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=OPENROUTER_API_KEY,
+                default_headers={
+                    "HTTP-Referer": "https://github.com/KawalRupiah/X",
+                    "X-Title": "Currency Bot"
+                }
+            )
+            response = client.chat.completions.create(
+                model="qwen/qwen3-next-80b-a3b-instruct:free",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=90,
+                temperature=0.82
+            )
+            if response and response.choices and len(response.choices) > 0:
+                intro = response.choices[0].message.content.strip()
+                intro = intro.strip('"').strip("'")
+                print(f"✨ AI Intro Generated (via Qwen): {intro}")
+                return intro
+                
+        except Exception as e:
+            print(f"⚠️ OpenRouter (Qwen) failed: {e}. Falling back to Groq...")
+    else:
+        print("⚠️ OPENROUTER_API_KEY not set. Falling back to Groq...")
+
+    # 3. Fallback Attempt: Llama via Groq
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        try:
+            client = OpenAI(
+                base_url="https://api.groq.com/openai/v1",
+                api_key=groq_key
+            )
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=90,
+                temperature=0.82
+            )
+            if response and response.choices and len(response.choices) > 0:
+                intro = response.choices[0].message.content.strip()
+                intro = intro.strip('"').strip("'")
+                print(f"✨ AI Intro Generated (via Groq): {intro}")
+                return intro
+                
+        except Exception as e:
+            print(f"⚠️ Groq (Llama) failed: {e}. Just letting it be.")
+            return ""
+    else:
+        print("⚠️ GROQ_API_KEY not set. Just letting it be.")
         return ""
-    except Exception as e:
-        print(f"⚠️ Error generating AI intro: {e}")
-        return ""
+        
+    return ""
 
 def post_to_x(text: str, image_paths) -> bool:
     try:
