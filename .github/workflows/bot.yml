@@ -1,10 +1,12 @@
 name: KawalRupiah Bot
 
 on:
-  schedule:
+  # schedule:
     # Runs at minute 0 of every hour
-    - cron: '0 * * * *' 
+    # - cron: '0 * * * *' 
   workflow_dispatch: 
+  repository_dispatch:
+    types: [hourly_market_update]
 
 jobs:
   run-bot:
