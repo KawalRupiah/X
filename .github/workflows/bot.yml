@@ -24,9 +24,28 @@ jobs:
       - name: Install Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install yfinance matplotlib tweepy supabase openai pytz
+          pip install requests pandas matplotlib tweepy supabase openai pytz
+
+      - name: Check Market Status
+        id: market_check
+        run: |
+          # Get current day of week (0=Sunday, 6=Saturday) and hour in Asia/Jakarta timezone
+          CURRENT_TIME=$(TZ='Asia/Jakarta' date '+%w %H')
+          DAY=$(echo $CURRENT_TIME | cut -d' ' -f1)
+          HOUR=$(echo $CURRENT_TIME | cut -d' ' -f2)
+          
+          # Market closed: Saturday (6) after 04:00, all day Sunday (0), Monday (1) before 04:00
+          # This means: Last run Saturday 04:00, First run Monday 04:00
+          if [[ $DAY -eq 6 && $HOUR -gt 4 ]] || [[ $DAY -eq 0 ]] || [[ $DAY -eq 1 && $HOUR -lt 4 ]]; then
+            echo "Market is closed"
+            echo "is_open=false" >> $GITHUB_OUTPUT
+          else
+            echo "Market is open"
+            echo "is_open=true" >> $GITHUB_OUTPUT
+          fi
 
       - name: Execute Python Bot
+        if: steps.market_check.outputs.is_open == 'true'
         env:
           # This maps your hidden GitHub Secrets to the Python os.environ variables securely
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
@@ -36,4 +55,5 @@ jobs:
           X_API_SECRET: ${{ secrets.X_API_SECRET }}
           X_ACCESS_TOKEN: ${{ secrets.X_ACCESS_TOKEN }}
           X_ACCESS_SECRET: ${{ secrets.X_ACCESS_SECRET }}
+          TWELVEDATA_API_KEY: ${{ secrets.TWELVEDATA_API_KEY }}
         run: python bot.py
