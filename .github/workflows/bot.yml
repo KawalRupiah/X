@@ -30,6 +30,7 @@ jobs:
 
       - name: Execute Python Bot
         env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           X_API_KEY: ${{ secrets.X_API_KEY }}

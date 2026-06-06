@@ -32,10 +32,15 @@ def is_weekly_recap_time(dt) -> bool:
 def main():
     print("🚀 Initiating 3-hour execution checks... (Forex market hours: closed Sat 05:00 - Mon 05:00 WIB)")
     
-    # 1. Short-circuit if market is closed
+    # 1. Short-circuit if market is closed (UNLESS triggered manually)
+    is_manual_run = os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+    
     if is_market_closed():
-        print("💤 Market is currently closed for the weekend (Saturday 05:00 - Monday 05:00 WIB). Exiting safely.")
-        return
+        if is_manual_run:
+            print("🔧 Manual trigger detected (workflow_dispatch). Bypassing market hours check to test code.")
+        else:
+            print("💤 Market is currently closed for the weekend (Saturday 05:00 - Monday 05:00 WIB). Exiting safely.")
+            return
 
     # 2. Fetch live market data (24h for normal update + charts)
     try:
@@ -62,6 +67,7 @@ def main():
 
     # Get current datetime (already in Asia/Jakarta from API)
     current_dt = data_df.index[-1]
+    print(current_dt)
     tz = pytz.timezone('Asia/Jakarta')
     if current_dt.tzinfo is None:
         current_dt = tz.localize(current_dt)
