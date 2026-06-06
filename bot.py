@@ -72,11 +72,11 @@ def main():
         # Naive datetime from API is already in Asia/Jakarta, localize it
         current_dt = tz.localize(current_dt)
 
-    # 4. Track All-Time Highs (ATH) from 24-hour data
-    ath_broken = check_and_update_ath(data_df)
+    # 4. Track All-Time Highs + Psychological levels
+    ath_broken, psych_broken = check_and_update_ath(data_df)
 
     # 5. Generate Dynamic AI Intro & Grafana-Style Charts
-    dynamic_intro = generate_ai_intro(ath_broken, market_stats)
+    dynamic_intro = generate_ai_intro(ath_broken, psych_broken)
     image_paths = generate_chart(data_df, None)  # Returns list of 3 image paths
 
     # 6. Format Tweet Body
@@ -206,10 +206,18 @@ def generate_chart(df, output_path: str):
         padding = (ymax - ymin) * 0.05
         ax.set_ylim(ymin - padding, ymax + padding)
 
-        # Build title with change
+        # Build title with big, bold, color-coded change number
         change = current_rates[key] - prev_rates[key] if prev_rates[key] else 0
-        title = f"{label}\n{change:+.0f}" if prev_rates[key] else label
-        ax.set_title(title, color=text_color, fontsize=13, fontweight='bold', pad=10)
+        change_str = f"{change:+.0f}" if prev_rates[key] else ""
+        
+        # Currency name (smaller)
+        ax.set_title(label, color=text_color, fontsize=14, fontweight='bold', pad=22)
+        
+        # Big change number (much more visible)
+        change_color = '#73bf69' if change < 0 else '#ff780a' if change > 0 else text_color
+        ax.text(0.5, 0.87, change_str, transform=ax.transAxes,
+                fontsize=24, fontweight='bold', color=change_color,
+                ha='center', va='top')
 
         ax.set_xlabel("Waktu (WIB)", color=text_color, fontsize=10, labelpad=8)
         ax.set_ylabel("Kurs (Rp)", color=text_color, fontsize=10, labelpad=8)
@@ -287,10 +295,16 @@ def format_tweet(intro: str, usd: int, sgd: int, myr: int, prev_usd: int, prev_s
     myr_change = get_change_text(myr, prev_myr)
 
     intro_block = f"{intro}\n\n" if intro else ""
+    
+    usd_arrow = "🟢" if usd < prev_usd else "🔴" if usd > prev_usd else "➖"
+    sgd_arrow = "🟢" if sgd < prev_sgd else "🔴" if sgd > prev_sgd else "➖"
+    myr_arrow = "🟢" if myr < prev_myr else "🔴" if myr > prev_myr else "➖"
+    
     return (f"{intro_block}Kurs Rupiah hari {date_str} jam {time_str} WIB:\n"
-            f"- USD/IDR: Rp{format_idr_number(usd)}{usd_change}\n"
-            f"- SGD/IDR: Rp{format_idr_number(sgd)}{sgd_change}\n"
-            f"- MYR/IDR: Rp{format_idr_number(myr)}{myr_change}")
+            f"- USD/IDR: Rp{format_idr_number(usd)}{usd_change} {usd_arrow}\n"
+            f"- SGD/IDR: Rp{format_idr_number(sgd)}{sgd_change} {sgd_arrow}\n"
+            f"- MYR/IDR: Rp{format_idr_number(myr)}{myr_change} {myr_arrow}\n\n"
+            f"Update otomatis tiap 3 jam • Follow buat pantau live")
 
 
 # ==========================================
@@ -299,64 +313,89 @@ def format_tweet(intro: str, usd: int, sgd: int, myr: int, prev_usd: int, prev_s
 
 
 
-def check_and_update_ath(df: pd.DataFrame) -> list:
-    """Check if any currencies in the data hit new all-time highs.
-    Updates only the existing ath_records row and includes updated_at timestamp."""
+def check_and_update_ath(df: pd.DataFrame) -> tuple[list, list]:
+    """Check ATH + new psychological levels (every Rp100). Returns (ath_broken, psych_broken)"""
     ath_broken = []
+    psych_broken = []
     try:
-        # Find maximum values from the data (convert to int)
+        # Current max in 24h data
         max_usd = int(round(df['USDIDR=X'].max()))
         max_sgd = int(round(df['SGDIDR=X'].max()))
         max_myr = int(round(df['MYRIDR=X'].max()))
 
-        # Get existing ATH records
         response = supabase.table("ath_records").select("*").eq("id", 1).execute()
-        
-        # Initialize or get existing ATH data
-        if response.data:
-            ath_data = response.data[0]
-        else:
-            ath_data = {"id": 1, "usd": 0, "sgd": 0, "myr": 0}
-        
-        # Prepare updates with current timestamp
+        ath_data = response.data[0] if response.data else {"id": 1, "usd": 0, "sgd": 0, "myr": 0,
+                                                           "usd_psych": 0, "sgd_psych": 0, "myr_psych": 0}
+
         now = datetime.utcnow().isoformat() + 'Z'
         updates = {"id": 1, "updated_at": now}
 
-        # Check each currency against stored ATH
+        # ====================== ATH LOGIC (unchanged) ======================
         if max_usd > ath_data.get("usd", 0):
             ath_broken.append(f"USD ({max_usd})")
             updates["usd"] = max_usd
         else:
             updates["usd"] = ath_data.get("usd", max_usd)
-            
+
         if max_sgd > ath_data.get("sgd", 0):
             ath_broken.append(f"SGD ({max_sgd})")
             updates["sgd"] = max_sgd
         else:
             updates["sgd"] = ath_data.get("sgd", max_sgd)
-            
+
         if max_myr > ath_data.get("myr", 0):
             ath_broken.append(f"MYR ({max_myr})")
             updates["myr"] = max_myr
         else:
             updates["myr"] = ath_data.get("myr", max_myr)
 
-        # Use upsert to create record if it doesn't exist, or update if it does
+        # ====================== PSYCHOLOGICAL LEVELS (new) ======================
+        # Every Rp100 (e.g. 18.000, 18.100, 18.200, 14.100, 4.500, etc.)
+        psych_usd = (max_usd // 100) * 100
+        if psych_usd > ath_data.get("usd_psych", 0) and psych_usd >= 10000:   # reasonable floor
+            psych_broken.append(f"USD Rp{format_idr_number(psych_usd)}")
+            updates["usd_psych"] = psych_usd
+        else:
+            updates["usd_psych"] = ath_data.get("usd_psych", psych_usd)
+
+        psych_sgd = (max_sgd // 100) * 100
+        if psych_sgd > ath_data.get("sgd_psych", 0):
+            psych_broken.append(f"SGD Rp{format_idr_number(psych_sgd)}")
+            updates["sgd_psych"] = psych_sgd
+        else:
+            updates["sgd_psych"] = ath_data.get("sgd_psych", psych_sgd)
+
+        psych_myr = (max_myr // 100) * 100
+        if psych_myr > ath_data.get("myr_psych", 0):
+            psych_broken.append(f"MYR Rp{format_idr_number(psych_myr)}")
+            updates["myr_psych"] = psych_myr
+        else:
+            updates["myr_psych"] = ath_data.get("myr_psych", psych_myr)
+
         supabase.table("ath_records").upsert(updates, on_conflict="id").execute()
+
         if ath_broken:
-            print(f"🚀 New ATH(s) found for: {', '.join(ath_broken)}")
+            print(f"🚀 New ATH(s) found: {', '.join(ath_broken)}")
+        if psych_broken:
+            print(f"🚀 New psychological level(s) broken: {', '.join(psych_broken)}")
+
     except Exception as e:
-        print(f"⚠️ Error tracking ATH: {e}")
-    return ath_broken
+        print(f"⚠️ Error tracking ATH/psych levels: {e}")
+
+    return ath_broken, psych_broken
 
 
-def generate_ai_intro(ath_broken: list, market_stats: dict = None) -> str:
+def generate_ai_intro(ath_broken: list, psych_broken: list = None, market_stats: dict = None) -> str:
     # 1. Setup Context & Prompts
     context_lines = []
 
     if ath_broken:
         context_lines.append(f"GILA! Beberapa mata uang baru aja ngegas cetak ATH segar melawan Rupiah: {', '.join(ath_broken)}. Pasar lagi nggak main-main.")
-    else:
+
+    if psych_broken:
+        context_lines.append(f"GILA! Baru aja nembus level psikologis: {', '.join(psych_broken)}. Trader pada heboh banget.")
+
+    if not ath_broken and not psych_broken:
         context_lines.append("Belum ada ATH baru, pergerakan masih dalam batas normal harian.")
 
     if market_stats:
@@ -389,6 +428,8 @@ def generate_ai_intro(ath_broken: list, market_stats: dict = None) -> str:
         "6. Kalau tren turun tajam (Rupiah menguat): nada kaget seneng tapi tetap sinis (misal: 'Tumben Rupiah berotot').\n"
         "7. Kalau market lagi gerak CEPAT (baik Rupiah lebih baik atau lebih buruk): tambahin emoji alert 🚨 atau ⚠️ di tempat yang pas.\n"
         "8. Boleh pakai emoji lain kalau pas, tapi tetap satu kalimat saja."
+        "9. Kalau pasar sideways/normal: boleh tambah sedikit hook ringan atau pertanyaan (contoh: '...biasa aja bro, lo lagi nunggu apa?') tapi tetap satu kalimat dan jangan lebay.\n"
+        "10. Kalau pasar benar-benar sideways/normal: boleh akhiri dengan pertanyaan ringan yang bikin orang reply (contoh: 'lo lagi nunggu apa?', 'siapa yang masih hold USD?') tapi tetap satu kalimat saja."
     )
 
     user_prompt = (
