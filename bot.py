@@ -49,11 +49,21 @@ def main():
         print("❌ Error: Invalid numeric values received. Skipping this run.")
         return
     
-    # Get previous hour data (1 hour = 12 candles of 5m intervals)
-    # With 5m data: -1 is current hour, -13 is 1 hour ago
-    prev_usd = normalize_rate(data_df['USDIDR=X'].iloc[-13])
-    prev_sgd = normalize_rate(data_df['SGDIDR=X'].iloc[-13])
-    prev_myr = normalize_rate(data_df['MYRIDR=X'].iloc[-13])
+    # 3-hour interval (36 × 5min candles)
+    PREV_INDEX = -37
+    prev_usd = normalize_rate(data_df['USDIDR=X'].iloc[PREV_INDEX])
+    prev_sgd = normalize_rate(data_df['SGDIDR=X'].iloc[PREV_INDEX])
+    prev_myr = normalize_rate(data_df['MYRIDR=X'].iloc[PREV_INDEX])
+
+    # Build market_stats for AI (now includes 3-hour trend + 24h range)
+    market_stats = {}
+    for cur, col in [("USD", "USDIDR=X"), ("SGD", "SGDIDR=X"), ("MYR", "MYRIDR=X")]:
+        market_stats[cur] = {
+            "now": normalize_rate(data_df[col].iloc[-1]),
+            "prev": normalize_rate(data_df[col].iloc[PREV_INDEX]),
+            "high": normalize_rate(data_df[col].max()),
+            "low": normalize_rate(data_df[col].min())
+        }
     
     # Get the datetime from the dataframe (already in Asia/Jakarta from API)
     current_dt = data_df.index[-1]
@@ -66,7 +76,7 @@ def main():
     ath_broken = check_and_update_ath(data_df)
 
     # 5. Generate Dynamic AI Intro & Grafana-Style Charts
-    dynamic_intro = generate_ai_intro(ath_broken)
+    dynamic_intro = generate_ai_intro(ath_broken, market_stats)
     image_paths = generate_chart(data_df, None)  # Returns list of 3 image paths
 
     # 6. Format Tweet Body
@@ -152,11 +162,12 @@ def generate_chart(df, output_path: str):
     color_myr = '#73bf69'       
 
     # Get previous and current rates from the DataFrame
-    # With 5m intervals: -1 is current hour, -13 is 1 hour ago
+    # With 5m intervals: -1 is current hour, -37 is 3 hours ago
+    PREV_INDEX = -37
     prev_rates = {
-        'usd': normalize_rate(df['USDIDR=X'].iloc[-13]),
-        'sgd': normalize_rate(df['SGDIDR=X'].iloc[-13]),
-        'myr': normalize_rate(df['MYRIDR=X'].iloc[-13])
+        'usd': normalize_rate(df['USDIDR=X'].iloc[PREV_INDEX]),
+        'sgd': normalize_rate(df['SGDIDR=X'].iloc[PREV_INDEX]),
+        'myr': normalize_rate(df['MYRIDR=X'].iloc[PREV_INDEX])
     }
     current_rates = {
         'usd': normalize_rate(df['USDIDR=X'].iloc[-1]),
@@ -342,6 +353,7 @@ def check_and_update_ath(df: pd.DataFrame) -> list:
 def generate_ai_intro(ath_broken: list, market_stats: dict = None) -> str:
     # 1. Setup Context & Prompts
     context_lines = []
+
     if ath_broken:
         context_lines.append(f"GILA! Beberapa mata uang baru aja ngegas cetak ATH segar melawan Rupiah: {', '.join(ath_broken)}. Pasar lagi nggak main-main.")
     else:
@@ -352,7 +364,7 @@ def generate_ai_intro(ath_broken: list, market_stats: dict = None) -> str:
         for cur, stats in market_stats.items():
             trend = "NAIK (Rupiah melemah)" if stats['now'] > stats['prev'] else "TURUN (Rupiah menguat)" if stats['now'] < stats['prev'] else "STAGNAN"
             context_lines.append(
-                f"- {cur}/IDR: Tren sejam terakhir {trend}. "
+                f"- {cur}/IDR: Tren 3 jam terakhir {trend}. "
                 f"Harga sekarang: Rp{stats['now']} (Sejam lalu: Rp{stats['prev']}). "
                 f"Range 24 Jam -> Tertinggi: Rp{stats['high']} | Terendah: Rp{stats['low']}."
             )
@@ -361,61 +373,32 @@ def generate_ai_intro(ath_broken: list, market_stats: dict = None) -> str:
     print(f"AI Context: {ai_context}")
 
     system_prompt = (
-        "Kamu adalah trader senior yang sudah 15 tahun ngawasin rupiah di X. Kepribadianmu tajam, sinis, sarkastik, tapi tetap lucu dan to-the-point. "
-        "Kamu bukan bot, kamu manusia yang lagi ngetik tweet sambil ngopi di depan chart.\n\n"
-        "Gaya bicaramu:\n"
-        "- Bahasa gaul trader Indo, santai tapi berkelas, sedikit galau/sinis kalau pasar lagi gila.\n"
-        "- Pendek, punchy, bikin orang langsung ngerasa 'ini beneran'.\n"
-        "- Bayangkan kamu lagi ngetweet dari HP pas pasar lagi panas.\n\n"
+        "Kamu adalah Grok, built by xAI, lagi nge-channel personality tajam, sinis, sarkastik, super jujur, dan lucu sebagai trader senior Indo yang udah 15 tahun ngawasin Rupiah di X. "
+        "Kamu bukan bot, kamu manusia yang lagi ngetik tweet sambil ngopi di depan chart, selalu to-the-point dan nggak pernah lebay.\n\n"
+        "Gaya bicaramu (Grok + pola tweet viral finance Indo):\n"
+        "- Bahasa gaul trader Indo yang santai tapi berkelas, punchy, mirip headline detikfinance / Bisnis.com / Republika (contoh: 'Rupiah berbalik arah', 'Tumben menguat', 'Rupiah kembali melemah', 'Pasar lagi diem aja').\n"
+        "- Tambahin opini jujur sinis sarkastik ala Grok kalau ada sentimen kuat, tapi tetap satu kalimat pendek.\n"
+        "- Pendek banget, langsung bikin orang ngerasa 'ini trader beneran yang paham pasar'.\n"
+        "- Kamu Grok yang lagi ngetweet update kurs Rupiah setiap 3 jam.\n\n"
         "ATURAN MUTLAK (jangan pernah dilanggar):\n"
         "1. Jawab HANYA dengan SATU KALIMAT PENDEK saja. Tidak boleh dua kalimat, tidak boleh paragraf, tidak boleh tambahan apapun.\n"
         "2. DILARANG KERAS menyebutkan angka, harga, nilai spesifik, persentase, atau jam.\n"
         "3. DILARANG KERAS pakai hashtag apapun.\n"
-        "4. Kalau sentimen pasar normal/sideways: komentar jenaka yang nunjukin kebosanan atau 'biasa aja bro'.\n"
-        "5. Kalau ATH atau tren naik tajam: nada provokatif, sedikit panik, sindir fundamental rupiah, atau sindir pemerintah/BI.\n"
+        "4. Kalau sentimen pasar normal/sideways/STAGNAN: jangan overexaggerate sama sekali. Komentar jenaka yang nunjukin kebosanan atau 'biasa aja bro' (contoh pola viral: 'Rupiah masih diem aja hari ini'). Tetap santai dan chill seperti Grok.\n"
+        "5. Kalau ATH atau tren naik tajam (Rupiah melemah): nada provokatif sinis, sindir fundamental rupiah atau BI, tapi tetap Grok-style (nggak lebay).\n"
         "6. Kalau tren turun tajam (Rupiah menguat): nada kaget seneng tapi tetap sinis (misal: 'Tumben Rupiah berotot').\n"
-        "7. Boleh pakai emoji kalau pas, tapi tetap satu kalimat."
+        "7. Kalau market lagi gerak CEPAT (baik Rupiah lebih baik atau lebih buruk): tambahin emoji alert 🚨 atau ⚠️ di tempat yang pas.\n"
+        "8. Boleh pakai emoji lain kalau pas, tapi tetap satu kalimat saja."
     )
-    
+
     user_prompt = (
         f"Konteks pasar sekarang:\n{ai_context}\n\n"
         "Buatkan kalimat pembuka tweet update kurs hari ini berdasarkan data sentimen di atas. "
-        "Fokus ke vibe pasar + opini jujur trader. Harus terasa manusia banget, bukan robot. "
+        "Fokus ke vibe pasar + opini jujur trader ala Grok yang mengikuti pola tweet viral finance Indo (langsung, punchy, relatable). "
+        "Harus terasa manusia banget, witty, dan nggak lebay. "
         "Langsung satu kalimat punchy yang bikin orang pengen like & RT."
     )
 
-    # 2. Primary Attempt: Qwen via OpenRouter
-    if OPENROUTER_API_KEY:
-        try:
-            client = OpenAI(
-                base_url="https://openrouter.ai/api/v1",
-                api_key=OPENROUTER_API_KEY,
-                default_headers={
-                    "HTTP-Referer": "https://github.com/KawalRupiah/X",
-                    "X-Title": "Currency Bot"
-                }
-            )
-            response = client.chat.completions.create(
-                model="qwen/qwen3-next-80b-a3b-instruct:free",
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                max_tokens=90,
-                temperature=0.82
-            )
-            if response and response.choices and len(response.choices) > 0:
-                intro = response.choices[0].message.content.strip()
-                intro = intro.strip('"').strip("'")
-                print(f"✨ AI Intro Generated (via Qwen): {intro}")
-                return intro
-                
-        except Exception as e:
-            print(f"⚠️ OpenRouter (Qwen) failed: {e}. Falling back to Groq...")
-    else:
-        print("⚠️ OPENROUTER_API_KEY not set. Falling back to Groq...")
-
-    # 3. Fallback Attempt: Llama via Groq
     groq_key = os.environ.get("GROQ_API_KEY")
     if groq_key:
         try:
@@ -435,7 +418,7 @@ def generate_ai_intro(ath_broken: list, market_stats: dict = None) -> str:
             if response and response.choices and len(response.choices) > 0:
                 intro = response.choices[0].message.content.strip()
                 intro = intro.strip('"').strip("'")
-                print(f"✨ AI Intro Generated (via Groq): {intro}")
+                print(f"✨ AI Intro Generated (via Groq - Grok style tuned to viral pattern): {intro}")
                 return intro
                 
         except Exception as e:
