@@ -30,11 +30,11 @@ def is_weekly_recap_time(dt) -> bool:
     return dt.weekday() == 4 and dt.hour == 23   # Friday 23:00 WIB (adjust if needed)
 
 def main():
-    print("🚀 Initiating 3-hour execution checks...")
+    print("🚀 Initiating 3-hour execution checks... (Forex market hours: closed Sat 05:00 - Mon 05:00 WIB)")
     
     # 1. Short-circuit if market is closed
     if is_market_closed():
-        print("💤 Market is currently closed for the weekend (Sabtu 04:00 - Senin 04:00 WIB). Exiting safely.")
+        print("💤 Market is currently closed for the weekend (Saturday 05:00 - Monday 05:00 WIB). Exiting safely.")
         return
 
     # 2. Fetch live market data (24h for normal update + charts)
@@ -263,12 +263,19 @@ def generate_chart(df, output_path: str):
 # ==========================================
 
 def is_market_closed() -> bool:
+    """Market closed from Saturday 05:00 WIB until Monday 05:00 WIB (real forex weekend)."""
     tz = pytz.timezone('Asia/Jakarta')
     now = datetime.now(tz)
-    day, hour = now.weekday(), now.hour
-    if day == 5 and hour >= 4: return True
-    if day == 6: return True
-    if day == 0 and hour < 4: return True
+    day = now.weekday()   # 0=Monday, 5=Saturday, 6=Sunday
+    hour = now.hour
+
+    # Closed starting Saturday 05:00 WIB
+    if day == 5 and hour >= 5:      # Saturday after 05:00 WIB
+        return True
+    if day == 6:                    # All Sunday
+        return True
+    if day == 0 and hour < 5:       # Monday before 05:00 WIB
+        return True
     return False
 
 def is_valid_rate(value) -> bool:
