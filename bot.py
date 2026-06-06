@@ -13,7 +13,6 @@ from supabase import create_client, Client
 TWELVEDATA_API_KEY = os.environ.get("TWELVEDATA_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 X_API_KEY = os.environ.get("X_API_KEY")
 X_API_SECRET = os.environ.get("X_API_SECRET")
 X_ACCESS_TOKEN = os.environ.get("X_ACCESS_TOKEN")
@@ -22,25 +21,32 @@ X_ACCESS_SECRET = os.environ.get("X_ACCESS_SECRET")
 # Initialize Supabase Client
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+def is_daily_recap_time(dt) -> bool:
+    """Daily recap at the last update of the day (adjust hour if your 3-hour schedule is different)."""
+    return dt.hour == 23   # ← change to your actual last posting hour if needed (e.g. 22 or 21)
+
+def is_weekly_recap_time(dt) -> bool:
+    """Weekly recap on Friday at the last update of the week."""
+    return dt.weekday() == 4 and dt.hour == 23   # Friday 23:00 WIB (adjust if needed)
 
 def main():
-    print("🚀 Initiating hourly execution checks...")
+    print("🚀 Initiating 3-hour execution checks...")
     
-    # 1. Short-circuit if market is closed (Weekend Check)
+    # 1. Short-circuit if market is closed
     if is_market_closed():
         print("💤 Market is currently closed for the weekend (Sabtu 04:00 - Senin 04:00 WIB). Exiting safely.")
         return
 
-    # 2. Fetch live market data via Twelve Data
+    # 2. Fetch live market data (24h for normal update + charts)
     try:
-        data_df = fetch_market_data_hourly()
+        data_df = fetch_market_data(days=1)
         print('head', data_df.head())
         print('tail', data_df.tail())
     except Exception as e:
         print(f"❌ Error fetching data: {e}")
         return
 
-    # 3. Extract the latest rates and previous hour rates safely
+    # Extract latest and previous rates (3-hour interval)
     latest_usd = normalize_rate(data_df['USDIDR=X'].iloc[-1])
     latest_sgd = normalize_rate(data_df['SGDIDR=X'].iloc[-1])
     latest_myr = normalize_rate(data_df['MYRIDR=X'].iloc[-1])
@@ -48,14 +54,19 @@ def main():
     if not all(value is not None for value in (latest_usd, latest_sgd, latest_myr)):
         print("❌ Error: Invalid numeric values received. Skipping this run.")
         return
-    
-    # 3-hour interval (36 × 5min candles)
+
     PREV_INDEX = -37
     prev_usd = normalize_rate(data_df['USDIDR=X'].iloc[PREV_INDEX])
     prev_sgd = normalize_rate(data_df['SGDIDR=X'].iloc[PREV_INDEX])
     prev_myr = normalize_rate(data_df['MYRIDR=X'].iloc[PREV_INDEX])
 
-    # Build market_stats for AI (now includes 3-hour trend + 24h range)
+    # Get current datetime (already in Asia/Jakarta from API)
+    current_dt = data_df.index[-1]
+    tz = pytz.timezone('Asia/Jakarta')
+    if current_dt.tzinfo is None:
+        current_dt = tz.localize(current_dt)
+
+    # Build market_stats for AI (3-hour trend + 24h range)
     market_stats = {}
     for cur, col in [("USD", "USDIDR=X"), ("SGD", "SGDIDR=X"), ("MYR", "MYRIDR=X")]:
         market_stats[cur] = {
@@ -64,28 +75,34 @@ def main():
             "high": normalize_rate(data_df[col].max()),
             "low": normalize_rate(data_df[col].min())
         }
-    
-    # Get the datetime from the dataframe (already in Asia/Jakarta from API)
-    current_dt = data_df.index[-1]
-    tz = pytz.timezone('Asia/Jakarta')
-    if current_dt.tzinfo is None:
-        # Naive datetime from API is already in Asia/Jakarta, localize it
-        current_dt = tz.localize(current_dt)
 
     # 4. Track All-Time Highs + Psychological levels
     ath_broken, psych_broken = check_and_update_ath(data_df)
 
-    # 5. Generate Dynamic AI Intro & Grafana-Style Charts
-    dynamic_intro = generate_ai_intro(ath_broken, psych_broken)
-    image_paths = generate_chart(data_df, None)  # Returns list of 3 image paths
+    # 5. Normal update (every 3 hours)
+    dynamic_intro = generate_ai_intro(ath_broken, psych_broken, market_stats)
+    image_paths = generate_chart(data_df, None)
 
-    # 6. Format Tweet Body
-    tweet_text = format_tweet(dynamic_intro, latest_usd, latest_sgd, latest_myr, prev_usd, prev_sgd, prev_myr, current_dt)
+    # 6. Format & post normal tweet
+    tweet_text = format_tweet(dynamic_intro, latest_usd, latest_sgd, latest_myr,
+                              prev_usd, prev_sgd, prev_myr, current_dt)
     print(f"📝 Prepared Tweet Content:\n\n{tweet_text}\n")
-    
-    # 7. Post To X
     post_to_x(tweet_text, image_paths)
-    
+
+    # ====================== RECAP LOGIC ======================
+    if is_daily_recap_time(current_dt):
+        print("📰 Generating daily recap...")
+        daily_recap = generate_recap(data_df, "daily", current_dt)
+        if daily_recap:
+            post_to_x(daily_recap, [])   # no images for recap
+
+    if is_weekly_recap_time(current_dt):
+        print("📰 Generating weekly recap (fetching 7 days)...")
+        weekly_df = fetch_market_data(days=7)
+        weekly_recap = generate_recap(weekly_df, "weekly", current_dt)
+        if weekly_recap:
+            post_to_x(weekly_recap, [])
+
     # Cleanup local images
     for img_path in image_paths:
         if os.path.exists(img_path):
@@ -96,20 +113,17 @@ def main():
 # DATA FETCHING & CHARTING
 # ==========================================
 
-def fetch_market_data_hourly() -> pd.DataFrame:
-    """Fetches hourly market data using start_date and end_date.
-    Gets last 24 hours for ATH comparison and change calculation."""
-    print("🔄 Fetching hourly market data from Twelve Data...")
+def fetch_market_data(days: int = 1) -> pd.DataFrame:
+    """Fetches market data for the last N days (default 1 day = 24h)."""
+    print(f"🔄 Fetching {days} day(s) market data from Twelve Data...")
     
     if not TWELVEDATA_API_KEY:
         raise ValueError("TWELVEDATA_API_KEY is missing from environment variables!")
 
-    # Calculate date range: 24 hours ago to now (both at minute 00)
     tz = pytz.timezone('Asia/Jakarta')
     end_time = datetime.now(tz).replace(minute=0, second=0, microsecond=0)
-    start_time = end_time - pd.Timedelta(hours=24)
+    start_time = end_time - pd.Timedelta(days=days)
     
-    # Format dates for API (ISO 8601 with timezone info)
     start_date = start_time.strftime('%Y-%m-%dT%H:%M:%S')
     end_date = end_time.strftime('%Y-%m-%dT%H:%M:%S')
 
@@ -134,7 +148,6 @@ def fetch_market_data_hourly() -> pd.DataFrame:
         temp_df.set_index('datetime', inplace=True)
         temp_df = temp_df[['close']].astype(float)
         
-        # Rename column for our standard formatting
         clean_col_name = symbol.replace("/", "") + "=X"
         temp_df.rename(columns={'close': clean_col_name}, inplace=True)
         df_list.append(temp_df)
@@ -144,8 +157,6 @@ def fetch_market_data_hourly() -> pd.DataFrame:
 
     combined_df = pd.concat(df_list, axis=1)
     combined_df.sort_index(inplace=True)
-
-    # ffill/bfill prevents any gaps from ruining the graph
     clean_data = combined_df.ffill().bfill()
     return clean_data
 
@@ -469,6 +480,66 @@ def generate_ai_intro(ath_broken: list, psych_broken: list = None, market_stats:
         print("⚠️ GROQ_API_KEY not set. Just letting it be.")
         return ""
         
+    return ""
+
+def generate_recap(df: pd.DataFrame, recap_type: str = "daily", current_dt=None) -> str:
+    """Generate daily or weekly recap using Groq (Grok-style, 2-4 punchy sentences)."""
+    # Build context
+    context_lines = []
+    if recap_type == "daily":
+        context_lines.append("REKAP HARIAN: Berikan ringkasan singkat pergerakan USD, SGD, MYR vs Rupiah hari ini.")
+    else:
+        context_lines.append("REKAP MINGGUAN: Berikan ringkasan singkat pergerakan USD, SGD, MYR vs Rupiah sepanjang minggu ini.")
+
+    # Simple stats
+    for col, label in [("USDIDR=X", "USD"), ("SGDIDR=X", "SGD"), ("MYRIDR=X", "MYR")]:
+        start = normalize_rate(df[col].iloc[0])
+        end = normalize_rate(df[col].iloc[-1])
+        high = normalize_rate(df[col].max())
+        low = normalize_rate(df[col].min())
+        change = end - start if start and end else 0
+        direction = "naik" if change > 0 else "turun" if change < 0 else "stagnan"
+        context_lines.append(f"- {label}: {direction} dari Rp{start} ke Rp{end} (high Rp{high} | low Rp{low})")
+
+    ai_context = "\n".join(context_lines)
+
+    system_prompt = (
+        "Kamu adalah Grok, built by xAI, trader senior Indo yang tajam, sinis, sarkastik, super jujur, dan lucu. "
+        "Buat recap harian/mingguan yang manusia banget, punchy, dan relatable.\n\n"
+        "Gaya: gaul trader Indo, mirip headline detikfinance tapi dengan sentimen Grok. "
+        "Boleh 2-4 kalimat pendek, boleh pakai emoji kalau pas, tapi tetap to-the-point dan nggak lebay.\n\n"
+        "ATURAN MUTLAK:\n"
+        "1. Jangan pernah sebutkan angka spesifik kecuali yang sudah ada di konteks.\n"
+        "2. Tidak boleh hashtag.\n"
+        "3. Tetap sarkastik/sinis kalau pasar lagi jelek, seneng kalau Rupiah kuat.\n"
+        "4. Akhiri dengan vibe trader yang lagi ngopi di depan chart."
+    )
+
+    user_prompt = (
+        f"Konteks {recap_type} recap:\n{ai_context}\n\n"
+        f"Buatkan recap {recap_type} yang langsung bisa dipost sebagai tweet. "
+        "Fokus ke vibe pasar + opini jujur trader ala Grok. Harus terasa manusia banget."
+    )
+
+    # Groq call (same as intro)
+    groq_key = os.environ.get("GROQ_API_KEY")
+    if groq_key:
+        try:
+            client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=groq_key)
+            response = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                max_tokens=180,
+                temperature=0.85
+            )
+            recap_text = response.choices[0].message.content.strip()
+            return recap_text
+        except Exception as e:
+            print(f"⚠️ Groq recap failed: {e}")
+            return f"Rekap {recap_type} gagal dibuat. Cek chart manual aja bro."
     return ""
 
 def post_to_x(text: str, image_paths) -> bool:
